@@ -1,0 +1,104 @@
+name: Build Nguồn C CloudStream
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nguonc-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.12"
+
+      - name: Build plugin
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          gradle make makePluginsJson --stacktrace
+
+      - name: Collect build artifacts
+        run: |
+          mkdir -p dist
+          find . -type f -name "*.cs3" -exec cp {} dist/ \;
+          cp build/plugins.json dist/plugins.json
+
+          test -s dist/plugins.json
+
+          echo "Build result:"
+          ls -lah dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nguonc-cloudstream
+          path: dist/
+
+      - name: Publish builds branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -e
+
+          git fetch origin builds:refs/remotes/origin/builds || true
+
+          if git show-ref --verify --quiet refs/remotes/origin/builds; then
+            git worktree add ../builds origin/builds
+          else
+            git worktree add --detach ../builds
+            cd ../builds
+            git checkout --orphan builds
+            git rm -rf . || true
+            cd ../NguonC-CloudStream
+          fi
+
+          rm -rf ../builds/*
+          rm -rf ../builds/.[!.]* ../builds/..?* 2>/dev/null || true
+
+          cp dist/*.cs3 ../builds/
+          cp dist/plugins.json ../builds/
+
+          cat > ../builds/repo.json <<EOF
+          {
+            "name": "Nguồn C",
+            "description": "Nguồn C CloudStream repository",
+            "manifestVersion": 1,
+            "pluginLists": [
+              "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/builds/plugins.json"
+            ]
+          }
+          EOF
+
+          cd ../builds
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git commit -m "Build ${GITHUB_SHA}" || true
+          git push origin HEAD:builds --force
